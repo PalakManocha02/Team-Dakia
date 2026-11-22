@@ -77,13 +77,21 @@ class Orchestrator:
             transition(run, S.PARSING, "Gemini request parsing enabled." if run.request.llm_enabled else "Reading the request with the bounded reference/structured parser; Gemini disabled for this run.")
         elif run.state == S.PARSING:
             if run.request.llm_enabled:
-                run.specs, question = self.llm().parse(run)
-                if run.request.mode == "fixture" and not question:
-                    # Sample suppliers are keyed by reference items; keep Gemini's saved
-                    # interpretation but match on the bounded parser's specs when it recognizes them.
-                    fixture_specs, fixture_question = FixtureParser().parse(run.request)
-                    if fixture_specs and not fixture_question:
-                        run.specs = fixture_specs
+                try:
+                    run.specs, question = self.llm().parse(run)
+                except IntegrationUnavailable as exc:
+                    if "NOT_CONFIGURED" in str(exc) or "CREDENTIAL" in str(exc) or "DEPENDENCY" in str(exc):
+                        raise  # missing setup stays an explicit failure
+                    # Keep the conversation going: fall back to the bounded parser, which asks
+                    # a question when it cannot read the request.
+                    run.events.append(WorkflowEvent(state=run.state, message=f"Gemini could not read this request ({str(exc).split(':')[0]}); using the built-in parser instead."))
+                    run.specs, question = FixtureParser().parse(run.request)
+                # When the bounded reference parser fully recognizes the request, its specs drive
+                # discovery (sample suppliers are keyed by them) and no extra question is asked.
+                # Gemini's interpretation stays saved for the trace.
+                fixture_specs, fixture_question = FixtureParser().parse(run.request)
+                if fixture_specs and not fixture_question:
+                    run.specs, question = fixture_specs, None
             else:
                 run.specs, question = FixtureParser().parse(run.request)
             if question:

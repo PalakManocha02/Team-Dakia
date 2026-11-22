@@ -74,20 +74,28 @@ class LLMExtractionService:
                 specs.append(Spec(id=sid,description=item.description,part_number=item.part_number,parameters=parameters,
                     quantity=quantity,unit=item.unit,substitutes=item.substitutes,unresolved_questions=item.missing_fields))
         question = intent.clarification_question
-        if not specs: question = question or "Which items or suppliers should I source?"
-        if request.request_type == "purchase" and any(s.quantity is None for s in specs):
-            question = question or "What quantity is required for each item? A build count alone is insufficient."
-        if any(s.unresolved_questions for s in specs):
-            question = question or next(q for s in specs for q in s.unresolved_questions)
-        if intent.category and intent.category != request.category:
-            question = question or f"The request appears to concern {intent.category}; confirm the category in a new request."
-        if intent.request_type and intent.request_type != request.request_type:
-            question = question or "Does this request need a purchase plan or only a supplier shortlist? Confirm the request type."
+        # Chat has no form: adopt a supported category, request type or destination stated in the text.
+        if intent.category in {"electronics", "leather_goods"} and intent.category != request.category:
+            request.category = intent.category
+        if intent.request_type in {"purchase", "shortlist"} and intent.request_type != request.request_type:
+            request.request_type = intent.request_type
         if intent.destination:
             parsed_destination = intent.destination.lower().strip()
             form_destination = request.destination.lower().strip()
             if parsed_destination not in form_destination and form_destination not in parsed_destination:
-                question = question or f"Your text specifies {intent.destination}, while the delivery field is {request.destination}. Confirm the destination in the request form."
+                request.destination = intent.destination
+        def ask(field, spec):
+            field = field.strip()
+            if " " in field or field.endswith("?"):
+                return field
+            return f"Could you tell me the {field.replace('_', ' ')} for {spec.description}?"
+        if not specs: question = question or "Which items or suppliers should I source?"
+        if request.request_type == "purchase" and any(s.quantity is None for s in specs):
+            question = question or "What quantity is required for each item? A build count alone is insufficient."
+        if any(s.unresolved_questions for s in specs):
+            question = question or next(ask(q, s) for s in specs for q in s.unresolved_questions)
+        if intent.category and intent.category not in {"electronics", "leather_goods"}:
+            question = question or f"This looks like {intent.category.replace('_', ' ')}. I can currently source electronics components and leather goods. Which of those should I look for?"
         return specs, question
 
     def extract(self, run):

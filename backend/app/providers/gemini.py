@@ -8,11 +8,33 @@ import json
 import os
 from pathlib import Path
 import re
+from typing import get_args, get_origin
 import httpx
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import create_engine
 from app.providers.interfaces import IntegrationUnavailable
 from app.providers.vertex_gemini import VertexGeminiTransport, validate_gemini_model
+
+
+def normalize_extraction(schema, value):
+    """Normalize representation differences only (Vertex returns numbers or nulls where
+    the contract has strings or lists); never invent required facts."""
+    if not isinstance(value, dict): return value
+    value = dict(value)
+    for name, field in schema.model_fields.items():
+        if name not in value: continue
+        annotation = field.annotation
+        if get_origin(annotation) is list:
+            if value[name] is None and field.default_factory is list:
+                value[name] = []
+            item_type = get_args(annotation)[0]
+            if isinstance(value[name], list) and isinstance(item_type, type) and issubclass(item_type, BaseModel):
+                value[name] = [normalize_extraction(item_type, item) for item in value[name]]
+        elif isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            value[name] = normalize_extraction(annotation, value[name])
+        elif annotation is str and type(value[name]) in {int, float}:
+            value[name] = str(value[name])
+    return value
 
 
 class GeminiClient:
@@ -78,7 +100,7 @@ class GeminiClient:
                     raise ValueError("incomplete or refused generation")
                 parts = candidate.get("content", {}).get("parts", [])
                 text = "".join(p.get("text", "") for p in parts if not p.get("thought", False))
-                result = schema.model_validate_json(text)
+                result = schema.model_validate(normalize_extraction(schema, json.loads(text)))
             except (ValueError, ValidationError, KeyError, IndexError, TypeError, AttributeError):
                 error = "GEMINI_INVALID_OR_BLOCKED_OUTPUT: no extraction applied"
         def tokens(name):
