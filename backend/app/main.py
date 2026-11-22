@@ -73,7 +73,9 @@ def create_app(database: Database | None = None):
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "payments": "mock", "live_integrations": "Crustdata (company search, enrich, job counts, news) requires worker key; Gemini parsing/extraction opt-in via llm_enabled (Vertex AI service account or GEMINI_API_KEY)", "worker": "separate process required"}
+        return {"status": "ok", "payments": "mock",
+                "gemini_configured": bool(os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or os.getenv("GEMINI_API_KEY")),
+                "crustdata_configured": bool(os.getenv("CRUSTDATA_API_KEY")), "live_integrations": "Crustdata (company search, enrich, job counts, news) requires worker key; Gemini parsing/extraction opt-in via llm_enabled (Vertex AI service account or GEMINI_API_KEY)", "worker": "separate process required"}
 
     @app.post("/api/runs", response_model=WorkflowRun, status_code=201)
     def create(body: SourcingRequest, request: Request):
