@@ -37,3 +37,9 @@
 .trust-card.amber { border-top-color: #d97706; }
 .hold-note { background: #fef3c7; color: #92400e; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
 .approve-note { color: #166534; font-size: 13px; margin: 0; }
+
+/* Passcode gate for the hosted desk */
+.gate { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.gate-card { width: 100%; max-width: 380px; display: grid; gap: 14px; }
+.gate-card h1 { margin: 0; }
+.gate-card p { margin: 0; }

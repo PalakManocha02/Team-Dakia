@@ -64,3 +64,6 @@ Thumbs.db
 Desktop.ini
 *.swp
 *.swo
+
+# Google Cloud service-account keys
+gen-lang-client-*.json

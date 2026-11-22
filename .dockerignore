@@ -1,0 +1,16 @@
+.git
+Team-Dakia
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/*.db*
+.env
+.env.*
+*.json.key
+*service-account*.json
+gen-lang-client-*.json
+*.pdf
+docs
+fixtures
+scripts

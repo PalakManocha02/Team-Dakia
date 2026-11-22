@@ -1,7 +1,7 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Activity, Box, Check, ChevronDown, CircleHelp, ClipboardList, FileText, Layers3, LoaderCircle, Plus, Search, ShieldCheck, Wallet } from 'lucide-react';
-import { api } from './api/client';
+import { api, AccessDenied, setAccessCode } from './api/client';
 import type { Run, Ledger, Reservation, RequestBody, Spec } from './types';
 import './styles.css';
 import { LLMInsights } from './components/LLMInsights';
@@ -37,6 +37,8 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [passcode, setPasscode] = useState('');
   const generation = useRef(0);
 
   const refresh = useCallback(async () => {
@@ -44,13 +46,13 @@ function App() {
     try {
       const list = await api<Run[]>('/runs');
       if (generation.current !== current) return;
-      setRuns(list); setConnected(true);
+      setRuns(list); setConnected(true); setLocked(false);
       if (selected) {
         const [r, l, b] = await Promise.all([api<Run>(`/runs/${selected}`), api<Ledger[]>(`/runs/${selected}/ledger`), api<Reservation[]>(`/runs/${selected}/reservations`)]);
         if (generation.current !== current) return;
         setRun(r); setLedger(l); setReservations(b);
       }
-    } catch (e) { if (generation.current === current) { setConnected(false); setError((e as Error).message); } }
+    } catch (e) { if (generation.current === current) { if (e instanceof AccessDenied) { setLocked(true); return; } setConnected(false); setError((e as Error).message); } }
   }, [selected]);
 
   useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 1200); return () => { clearInterval(timer); generation.current++; }; }, [refresh]);
@@ -58,7 +60,7 @@ function App() {
 
   async function action(work: () => Promise<unknown>) {
     setBusy(true); setError('');
-    try { await work(); await refresh(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    try { await work(); await refresh(); } catch (e) { if (e instanceof AccessDenied) setLocked(true); else setError((e as Error).message); } finally { setBusy(false); }
   }
   function pick(id: string | null) { generation.current++; setSelected(id); setRun(null); setLedger([]); setReservations([]); setTab('Plan'); setError(''); setAnswer(''); setBudgetEdit(''); }
   async function create() {
@@ -75,10 +77,15 @@ function App() {
   const supplierName = (id: string) => run?.suppliers.find(s => s.id === id)?.name ?? id;
   const selectedTotal = run?.orders.reduce((s, o) => s + o.amount_minor, 0) ?? 0;
 
+  if (locked) return <div className="gate"><form className="card gate-card" onSubmit={e => { e.preventDefault(); setAccessCode(passcode.trim()); setPasscode(''); void refresh(); }}>
+    <span className="brand-icon"><Layers3 size={23}/></span><h1>Sourcing Desk</h1><p className="muted">Live runs spend real data credits. Enter the team passcode to continue.</p>
+    <label>Passcode<input autoFocus required type="password" autoComplete="current-password" value={passcode} onChange={e => setPasscode(e.target.value)}/></label>
+    <button className="primary">Unlock</button></form></div>;
+
   return <div className="shell">
     <aside className="sidebar">
       <a className="brand" href="/" aria-label="Sourcing Desk home"><span className="brand-icon"><Layers3 size={23}/></span><span>Sourcing<span className="brand-light">Desk</span><small>PROCUREMENT WORKSPACE</small></span></a>
-      <div className="workspace"><span className="workspace-logo">S</span><div>Founder workspace<small>Local development</small></div><ChevronDown size={15}/></div>
+      <div className="workspace"><span className="workspace-logo">S</span><div>Founder workspace<small>Hackathon sandbox</small></div><ChevronDown size={15}/></div>
       <div className="nav-label">WORKSPACE</div>
       <button className="nav active" onClick={() => setTab('Plan')}><ClipboardList size={18}/>Sourcing requests<span>{runs.length}</span></button>
       <button className="nav" disabled={!run} onClick={() => setTab('Research')}><Wallet size={18}/>Research & spending</button>
@@ -91,7 +98,7 @@ function App() {
       <header className="topbar"><span>Workspace <span className="slash">/</span> Sourcing requests</span><span className={`connection ${connected ? '' : 'offline'}`}><span/>{connected ? 'API connected' : 'API unavailable'}</span></header>
       <div className="content">
         <div className="page-heading"><div><div className="eyebrow">YOUR SOURCING OPERATIONS</div><h1>{selected ? 'Request overview' : 'Source with confidence.'}</h1><p>{selected ? 'Every supplier, decision and rupee. In one place.' : 'From a buying request to a supplier plan you can inspect.'}</p></div>{selected && <button className="primary" onClick={() => pick(null)}><Plus size={17}/>New request</button>}</div>
-        <div className="environment"><ShieldCheck size={18}/><span><strong>Hackathon sandbox</strong> · Live supplier checks use real Crustdata data. Payments stay simulated and RFQs stay drafts.</span><span className="pill">LOCAL ONLY</span></div>
+        <div className="environment"><ShieldCheck size={18}/><span><strong>Hackathon sandbox</strong> · Live supplier checks use real Crustdata data. Payments stay simulated and RFQs stay drafts.</span><span className="pill">SANDBOX</span></div>
         {error && <div role="alert" className="error">{error}<button onClick={() => setError('')} aria-label="Dismiss error">×</button></div>}
         {!selected ? <div className="create-layout"><section className="card request-card"><div className="section-heading"><span className="icon-tile"><Search size={19}/></span><div><h2>What do you need to source?</h2><p>Include exact specs and a quantity for each item.</p></div></div>
           <form onSubmit={e => { e.preventDefault(); void create(); }}>
@@ -118,7 +125,7 @@ function App() {
           {tab === 'Orders & RFQs' && <section className="card"><div className="spread"><h2>Orders & RFQ drafts</h2><span className="pill">SIMULATED</span></div>{!run.orders.length && !run.rfqs.length && <p className="muted">Orders or drafts appear after a plan is selected.</p>}{run.orders.map(o => <div className="order-entry" key={o.id}><div className="spread"><div><h3>{supplierName(o.supplier_id)}</h3><p>{run.specs.find(s => s.id === o.spec_id)?.description}</p></div><strong>{money(o.amount_minor)}</strong></div><div className="spread"><span className={`pill ${o.state === 'PAID' ? 'green' : 'amber'}`}>{o.state} · mock</span>{o.state === 'PLANNED' && <button className="primary" disabled={busy} onClick={() => void action(() => api(`/runs/${run.id}/approvals`, 'POST', { plan_version: o.plan_version, order_id: o.id, amount_minor: o.amount_minor }))}>Approve {money(o.amount_minor)}</button>}</div><details><summary>Payment reference</summary><code>Idempotency key: {o.idempotency_key}</code><small>Plan version: {o.plan_version}</small><small>Mock payment: {o.payment_id ?? 'not settled'}</small></details></div>)}{run.rfqs.map(r => <div className="order-entry" key={r.id}><div className="spread"><h3>{supplierName(r.supplier_id)}</h3><span className="pill">DRAFT · UNSENT</span></div>{(() => { const c = (run.suppliers.find(s => s.id === r.supplier_id)?.profile as Record<string, any> | undefined)?.compliance; return c?.verdict === 'hold' ? <p className="hold-note"><strong>Held for your review before sending:</strong> {(c.reasons as string[]).join(' · ')}</p> : c?.verdict === 'approve' ? <p className="approve-note">Compliance screen passed</p> : null; })()}{r.recipient && <p className="muted">To: {r.recipient}</p>}<h4>{r.subject}</h4><p className="rfq-body">{r.body}</p></div>)}<button className="secondary" disabled={busy} onClick={() => void action(() => api(`/runs/${run.id}/resume`, 'POST'))}>Resume / reconcile saved work</button></section>}
           {tab === 'Activity' && <section className="card"><h2>Persisted activity</h2><div className="timeline">{run.events.map(e => <div className="timeline-entry" key={e.id}><span className="timeline-dot"/><div><strong>{e.state.replaceAll('_',' ')}</strong><p>{e.message}</p><small>{date(e.time)}</small></div></div>)}</div></section>}
         </>}
-        <footer><span>Sourcing Desk</span><span>Evidence before decisions. Human input for exceptions.</span><a href="http://127.0.0.1:8000/docs" target="_blank" rel="noreferrer">API reference</a></footer>
+        <footer><span>Sourcing Desk</span><span>Evidence before decisions. Human input for exceptions.</span><a href="/docs" target="_blank" rel="noreferrer">API reference</a></footer>
       </div>
     </main>
   </div>;

@@ -1,9 +1,12 @@
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
+import hmac
 import os
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import Field
 from app.contracts import (Contract, SourcingRequest, WorkflowRun, WorkflowEvent, RunState as S,
                            Spec, Approval, LedgerEntry, BudgetReservation, Decision, Order, RFQDraft, now)
@@ -16,6 +19,11 @@ from app.workflow.orchestrator import approve, fingerprint
 class BudgetUpdate(Contract):
     research_budget_minor: int | None = Field(default=None, ge=0)
     credit_budget: float | None = Field(default=None, ge=0, le=1000)
+
+
+def _env_number(name, cast):
+    value = os.getenv(name)
+    return cast(value) if value not in (None, "") else None
 
 
 class ClarificationAnswer(Contract):
@@ -32,6 +40,25 @@ def create_app(database: Database | None = None):
     app = FastAPI(title="Sourcing Desk", version="0.1.0", lifespan=lifespan,
                   description="Local procurement skeleton. Fixture data, simulated payments, RFQ drafts only.")
 
+    # Hosted deployments: a shared passcode guards every /api route except health, plus spend caps.
+    # All three are unset locally, so development and tests behave exactly as before.
+    access_code = os.getenv("ACCESS_CODE") or None
+    max_runs_per_day = _env_number("MAX_RUNS_PER_DAY", int)
+    max_credit_budget = _env_number("MAX_CREDIT_BUDGET", float)
+
+    @app.middleware("http")
+    async def passcode(request: Request, call_next):
+        path = request.url.path
+        if access_code and path.startswith("/api") and path != "/api/health":
+            supplied = request.headers.get("x-access-code", "")
+            if not hmac.compare_digest(supplied.encode(), access_code.encode()):
+                return JSONResponse(status_code=401, content={"error": {"code": "ACCESS_CODE_REQUIRED", "message": "Enter the team passcode to use this desk."}})
+        return await call_next(request)
+
+    def check_credit_cap(value):
+        if max_credit_budget is not None and value is not None and value > max_credit_budget:
+            raise ValueError(f"credit ceiling above {max_credit_budget:g} is not allowed on this hosted desk")
+
     @app.exception_handler(KeyError)
     async def missing(_, exc):
         return JSONResponse(status_code=404, content={"error": {"code": "NOT_FOUND", "message": "Run not found"}})
@@ -46,10 +73,16 @@ def create_app(database: Database | None = None):
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "payments": "mock", "live_integrations": "Crustdata (company search, enrich, job counts, news) requires worker key; Gemini parsing/extraction opt-in via llm_enabled and GEMINI_API_KEY", "worker": "separate process required"}
+        return {"status": "ok", "payments": "mock", "live_integrations": "Crustdata (company search, enrich, job counts, news) requires worker key; Gemini parsing/extraction opt-in via llm_enabled (Vertex AI service account or GEMINI_API_KEY)", "worker": "separate process required"}
 
     @app.post("/api/runs", response_model=WorkflowRun, status_code=201)
     def create(body: SourcingRequest, request: Request):
+        check_credit_cap(body.credit_budget)
+        if max_runs_per_day is not None:
+            with request.app.state.db.transaction() as c:
+                today = sum(1 for r in list_runs(c) if r.created_at > now() - timedelta(days=1))
+            if today >= max_runs_per_day:
+                return JSONResponse(status_code=429, content={"error": {"code": "DAILY_RUN_LIMIT", "message": f"This hosted desk allows {max_runs_per_day} new requests per 24 hours. Try again later."}})
         run = WorkflowRun(request=body)
         run.events.append(WorkflowEvent(state=S.CREATED, message=f"{body.mode} run created; awaiting worker."))
         with request.app.state.db.transaction() as c: save_run(c, run)
@@ -101,6 +134,7 @@ def create_app(database: Database | None = None):
                 run.request.research_budget_minor = body.research_budget_minor
                 run.events.append(WorkflowEvent(state=run.state, message=f"Research ceiling updated to {body.research_budget_minor} paise; committed spend remains visible."))
             if body.credit_budget is not None:
+                check_credit_cap(body.credit_budget)
                 run.request.credit_budget = body.credit_budget
                 run.events.append(WorkflowEvent(state=run.state, message=f"Crustdata credit ceiling set to {body.credit_budget:g}; credits already spent stay on the ledger and no new call may exceed it."))
             save_run(c, run)
@@ -141,6 +175,26 @@ def create_app(database: Database | None = None):
                 raise ValueError("answer the clarification before resuming")
             save_run(c, run)
         return run
+
+    @app.get("/api/access")
+    def access():
+        return {"ok": True}
+
+    # Serve the built dashboard from the same origin when FRONTEND_DIST points at it.
+    dist = os.getenv("FRONTEND_DIST")
+    if dist and Path(dist, "index.html").is_file():
+        root = Path(dist).resolve()
+        if (root / "assets").is_dir():
+            app.mount("/assets", StaticFiles(directory=root / "assets"), name="assets")
+
+        @app.get("/{path:path}", include_in_schema=False)
+        def spa(path: str):
+            if path == "api" or path.startswith("api/"):
+                return JSONResponse(status_code=404, content={"error": {"code": "NOT_FOUND", "message": "Unknown API route"}})
+            target = (root / path).resolve()
+            if path and target.is_file() and target.is_relative_to(root):
+                return FileResponse(target)
+            return FileResponse(root / "index.html")
 
     return app
 

@@ -1,0 +1,30 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Secrets marked sync: false are entered in the Render dashboard, never committed.
+services:
+  - type: web
+    name: sourcing-desk
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: deploy/render
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: ACCESS_CODE
+        sync: false
+      - key: CRUSTDATA_API_KEY
+        sync: false
+      - key: MAX_RUNS_PER_DAY
+        value: "10"
+      - key: MAX_CREDIT_BUDGET
+        value: "25"
+      # Gemini through Vertex AI. Upload the service-account JSON as a Secret File
+      # named gcp-sa.json; Render mounts it at /etc/secrets/gcp-sa.json.
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        value: /etc/secrets/gcp-sa.json
+      - key: GOOGLE_CLOUD_PROJECT
+        value: gen-lang-client-0663392387
+      - key: GOOGLE_CLOUD_LOCATION
+        value: global
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash

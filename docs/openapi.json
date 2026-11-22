@@ -562,6 +562,22 @@
           }
         }
       }
+    },
+    "/api/access": {
+      "get": {
+        "summary": "Access",
+        "operationId": "access_api_access_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

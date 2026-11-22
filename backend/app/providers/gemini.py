@@ -12,18 +12,29 @@ import httpx
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import create_engine
 from app.providers.interfaces import IntegrationUnavailable
+from app.providers.vertex_gemini import VertexGeminiTransport, validate_gemini_model
 
 
 class GeminiClient:
-    def __init__(self, key=None, model=None, journal_path="gemini-calls.db", client=None, max_calls=4):
-        key = key or os.getenv("GEMINI_API_KEY")
-        if not key:
-            raise IntegrationUnavailable("GEMINI_NOT_CONFIGURED: set GEMINI_API_KEY in the worker environment")
-        self.model = model or os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    def __init__(self, key=None, model=None, journal_path="gemini-calls.db", client=None, max_calls=4,
+                 backend=None, credentials_file=None, project=None, location=None, vertex_client=None):
+        # Vertex AI (service-account JSON) when GOOGLE_APPLICATION_CREDENTIALS is set; else the AI Studio key.
+        self.backend = backend or os.getenv("GEMINI_BACKEND") or ("vertex" if credentials_file or vertex_client or (client is None and os.getenv("GOOGLE_APPLICATION_CREDENTIALS")) else "developer")
+        if self.backend not in {"vertex", "developer"}:
+            raise IntegrationUnavailable("GEMINI_ONLY: backend must be vertex or developer")
+        self.model = model or os.getenv("GEMINI_MODEL") or ("gemini-2.5-flash" if self.backend == "vertex" else "gemini-3.1-flash-lite")
         if not re.fullmatch(r"[a-zA-Z0-9._-]+", self.model):
             raise IntegrationUnavailable("GEMINI_INVALID_MODEL")
+        if self.backend == "vertex":
+            validate_gemini_model(self.model)
         self.max_calls = max_calls
-        self.http = client or httpx.Client(base_url="https://generativelanguage.googleapis.com", headers={"x-goog-api-key":key}, timeout=45, follow_redirects=False)
+        if self.backend == "vertex":
+            self.http = VertexGeminiTransport(credentials_file=credentials_file, project=project, location=location, sdk_client=vertex_client)
+        else:
+            key = key or os.getenv("GEMINI_API_KEY")
+            if not key and client is None:
+                raise IntegrationUnavailable("GEMINI_NOT_CONFIGURED: set GEMINI_API_KEY, or GOOGLE_APPLICATION_CREDENTIALS for Vertex AI")
+            self.http = client or httpx.Client(base_url="https://generativelanguage.googleapis.com", headers={"x-goog-api-key":key}, timeout=45, follow_redirects=False)
         self.engine = create_engine("sqlite:///"+str(Path(journal_path).resolve()), connect_args={"timeout":30, "check_same_thread":False})
         with self.engine.begin() as c:
             c.exec_driver_sql("CREATE TABLE IF NOT EXISTS generations (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, stage TEXT NOT NULL, model TEXT NOT NULL, state TEXT NOT NULL, response TEXT, input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER)")
